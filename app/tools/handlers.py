@@ -1,5 +1,6 @@
 
 from typing import Any
+import sqlite3
 
 from app.database import get_connection
 from app.schemas import (
@@ -52,8 +53,9 @@ def get_business_hours(args: GetBusinessHoursArgs) -> dict[str, str]:
 
 def create_support_ticket(
     args: CreateSupportTicketArgs,
+    connection: sqlite3.Connection | None = None,
 ) -> dict[str, Any]:
-    with get_connection() as connection:
+    if connection is not None:
         cursor = connection.execute(
             """
             INSERT INTO support_tickets
@@ -63,6 +65,17 @@ def create_support_ticket(
             (args.customer_id, args.subject, args.description),
         )
         ticket_id = cursor.lastrowid
+    else:
+        with get_connection() as own_connection:
+            cursor = own_connection.execute(
+                """
+                INSERT INTO support_tickets
+                    (customer_id, subject, description)
+                VALUES (?, ?, ?)
+                """,
+                (args.customer_id, args.subject, args.description),
+            )
+            ticket_id = cursor.lastrowid
 
     return {
         "created": True,
@@ -72,8 +85,11 @@ def create_support_ticket(
     }
 
 
-def book_demo(args: BookDemoArgs) -> dict[str, Any]:
-    with get_connection() as connection:
+def book_demo(
+    args: BookDemoArgs,
+    connection: sqlite3.Connection | None = None,
+) -> dict[str, Any]:
+    if connection is not None:
         cursor = connection.execute(
             """
             INSERT INTO demo_bookings
@@ -83,6 +99,17 @@ def book_demo(args: BookDemoArgs) -> dict[str, Any]:
             (args.name, args.email, args.requested_day),
         )
         booking_id = cursor.lastrowid
+    else:
+        with get_connection() as own_connection:
+            cursor = own_connection.execute(
+                """
+                INSERT INTO demo_bookings
+                    (name, email, requested_day)
+                VALUES (?, ?, ?)
+                """,
+                (args.name, args.email, args.requested_day),
+            )
+            booking_id = cursor.lastrowid
 
     return {
         "created": True,
