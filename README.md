@@ -184,7 +184,7 @@ A write request may also supply an idempotency key:
 }
 ```
 
-Use a unique key for each logical write operation. The current SQLite idempotency implementation is intended for basic retry handling; it is not yet concurrency-safe or transactionally atomic across the handler and idempotency record.
+Use a unique key for each logical write operation. The engine uses SQLite transactions to atomically execute supported write operations, store idempotency records, and record successful executions. Repeated requests with the same key and input replay the original result; reusing a key with different inputs is rejected. Concurrent retries are covered by automated tests.
 
 ## Running tests
 
@@ -194,7 +194,7 @@ Run the test suite from the project root:
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
-The current test suite contains 24 passing tests. Gemini interactions in the automated agent tests are mocked, so the tests do not require live model calls.
+The current test suite contains 26 passing tests. Gemini interactions in the automated agent tests are mocked, so the tests do not require live model calls.
 
 ## Project structure
 
@@ -225,11 +225,10 @@ ai-tool-execution-engine/
 
 - Order and business-hour data are examples rather than integrations with a real business system.
 - The application uses a local SQLite database.
-- Idempotency handling needs transactional and concurrency-safe guarantees before being used for critical production writes.
 - Authentication, authorization, rate limiting, and production deployment configuration have not yet been implemented.
 - Tool execution is currently a single-tool interaction per assistant request.
 
-Potential next steps include stronger transactional idempotency, authentication, structured logging, configurable tool permissions, and integration tests for deployment.
+Potential next steps include authentication and authorization, rate limiting, structured logging, configurable tool permissions, production deployment, and integration tests.
 
 ## License
 
