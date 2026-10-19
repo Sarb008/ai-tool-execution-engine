@@ -269,7 +269,7 @@ def execute_tool(
                 arguments=arguments,
                 status="failed",
                 duration_ms=duration_ms,
-                error_message=f"{type(exc).__name__}: {exc}",
+                error_message=f"{type(exc).__name__}: Tool execution failed.",
             )
         except Exception:
             pass

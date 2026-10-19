@@ -43,3 +43,35 @@ def test_invalid_arguments_are_audited(isolated_database):
 
     assert row["status"] == "failed"
     assert "ValidationError" in row["error_message"]
+
+
+def test_failure_audit_does_not_store_sensitive_exception_details(
+    isolated_database, monkeypatch
+):
+    import app.registry as registry
+
+    secret = "SECRET_DATABASE_PASSWORD"
+
+    def crash_handler(*args, **kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setitem(
+        registry.TOOL_HANDLERS,
+        "check_order_status",
+        crash_handler,
+    )
+
+    with pytest.raises(RuntimeError):
+        execute_tool(
+            "check_order_status",
+            {"order_id": "ORD-1001"},
+        )
+
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT error_message FROM tool_executions "
+            "WHERE status = 'failed' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+
+    assert row is not None
+    assert secret not in row["error_message"]
