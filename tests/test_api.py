@@ -61,3 +61,24 @@ def test_unknown_tool_returns_400():
     )
 
     assert response.status_code == 400
+
+
+def test_unexpected_tool_error_does_not_leak_internal_details(monkeypatch):
+    import app.main as main
+
+    def crash_tool(*args, **kwargs):
+        raise RuntimeError("SECRET_DATABASE_PASSWORD")
+
+    monkeypatch.setattr(main, "execute_tool", crash_tool)
+
+    response = client.post(
+        "/tools/execute",
+        json={
+            "tool_name": "check_order_status",
+            "arguments": {"order_id": "ORD-1001"},
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "Tool execution failed."
+    assert "SECRET_DATABASE_PASSWORD" not in response.text
