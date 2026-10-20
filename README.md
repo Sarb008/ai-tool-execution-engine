@@ -4,6 +4,15 @@ ToolPilot is a full-stack AI tool execution engine that converts natural-languag
 
 Rather than allowing an AI model to execute arbitrary operations, ToolPilot exposes an allowlisted set of tools. The application validates proposed arguments, dispatches registered handlers, persists relevant results, and records execution history.
 
+## Live Demo
+
+- **Live application:** https://ai-tool-execution-engine.vercel.app/
+- **Backend API:** https://toolpilot-api.onrender.com/
+- **Interactive API documentation:** https://toolpilot-api.onrender.com/docs
+- **Source code:** https://github.com/Sarb008/ai-tool-execution-engine
+
+The frontend is deployed on Vercel, with the FastAPI backend hosted on Render. The application uses Google's Gemini API for AI-powered tool selection.
+
 ## Features
 
 - **AI-powered tool selection:** Use Gemini function calling to map natural-language requests to registered application tools.
@@ -269,6 +278,34 @@ This runs TypeScript compilation and creates a production build using Vite.
 
 **Latest local verification:** TypeScript compilation and the Vite production build completed successfully.
 
+## Deployment
+
+ToolPilot is deployed as two separate services:
+
+| Component | Platform | Purpose |
+|---|---|---|
+| React + TypeScript frontend | Vercel | Hosts the web interface |
+| FastAPI backend | Render | Handles API requests and Gemini integration |
+| Application database | SQLite | Stores conversations, tool executions, and supported business records |
+
+The frontend uses the `VITE_API_BASE_URL` environment variable to configure the backend URL at build time.
+
+For a local deployment, the frontend defaults to `http://127.0.0.1:8000`. For the hosted frontend, configure:
+
+```dotenv
+VITE_API_BASE_URL=https://toolpilot-api.onrender.com
+```
+
+Configure `GEMINI_API_KEY` and `GEMINI_MODEL` in the backend hosting environment. Never expose the Gemini API key through frontend environment variables or commit it to the repository.
+
+### Hosted demo limitations
+
+- Render's free web services can spin down after inactivity, so the first request after an idle period may be slower.
+- The hosted backend uses SQLite on an ephemeral filesystem. Database changes can be lost when the service restarts, spins down, or redeploys.
+- The hosted application is intended for demonstration and evaluation, not production workloads.
+
+See the [Render free instance documentation](https://render.com/docs/free) for hosting limitations.
+
 ## Project structure
 
 ```text
@@ -309,7 +346,7 @@ ai-tool-execution-engine/
 ## Limitations and future improvements
 
 - Business hours and order status use sample data rather than live external integrations.
-- The backend currently uses local SQLite storage.
+- The backend currently uses SQLite storage. The local development database persists on the local filesystem, while the hosted demo uses an ephemeral filesystem and does not guarantee data persistence across restarts or redeployments.
 - Authentication, authorization, rate limiting, and production deployment configuration are not implemented.
 - Assistant requests support a single tool interaction rather than multi-step workflows.
 - Lease-based recovery has been implemented, but dedicated recovery tests are still needed.
