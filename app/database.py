@@ -1,7 +1,9 @@
 
 import json
 import os
+import secrets
 import sqlite3
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
@@ -10,6 +12,8 @@ from typing import Any, Iterator
 DATABASE_PATH = Path(
     os.getenv("DATABASE_PATH", "ai_tool_engine.db")
 )
+
+ASSISTANT_REQUEST_LEASE_SECONDS = 120
 
 
 @contextmanager
@@ -75,6 +79,8 @@ def initialize_database() -> None:
                 status TEXT NOT NULL
                     CHECK (status IN ('in_progress', 'completed')),
                 response_json TEXT,
+                owner_token TEXT,
+                lease_expires_at REAL,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -103,6 +109,24 @@ def initialize_database() -> None:
 
             """
         )
+        columns = {
+                    row["name"]
+                    for row in connection.execute(
+                        "PRAGMA table_info(assistant_request_records)"
+                    ).fetchall()
+                }
+
+        if "owner_token" not in columns:
+            connection.execute(
+                "ALTER TABLE assistant_request_records "
+                "ADD COLUMN owner_token TEXT"
+            )
+
+        if "lease_expires_at" not in columns:
+            connection.execute(
+                "ALTER TABLE assistant_request_records "
+                "ADD COLUMN lease_expires_at REAL"
+            )
 
 
 def record_tool_execution(
@@ -350,19 +374,118 @@ def add_chat_message(
     return message
 
 
+def add_chat_message_for_assistant_request(
+    idempotency_key: str,
+    owner_token: str,
+    conversation_id: int,
+    role: str,
+    content: str,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Write a message only while this worker owns a valid request lease."""
+
+    if role not in {"user", "assistant"}:
+        raise ValueError("role must be 'user' or 'assistant'")
+
+    details_json = (
+        json.dumps(details, sort_keys=True, default=str)
+        if details is not None
+        else None
+    )
+
+    with get_connection() as connection:
+        # Acquire the write lock before checking ownership. This prevents
+        # another worker from taking over between the check and the write.
+        connection.execute("BEGIN IMMEDIATE")
+
+        claim = connection.execute(
+            """
+            SELECT 1
+            FROM assistant_request_records
+            WHERE idempotency_key = ?
+              AND status = 'in_progress'
+              AND owner_token = ?
+              AND lease_expires_at > ?
+            """,
+            (idempotency_key, owner_token, time.time()),
+        ).fetchone()
+
+        if claim is None:
+            raise RuntimeError(
+                "Cannot save a message: request ownership was lost."
+            )
+
+        conversation = connection.execute(
+            "SELECT id, title FROM conversations WHERE id = ?",
+            (conversation_id,),
+        ).fetchone()
+
+        if conversation is None:
+            raise ValueError("Conversation not found")
+
+        cursor = connection.execute(
+            """
+            INSERT INTO chat_messages (
+                conversation_id, role, content, details_json
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (conversation_id, role, content, details_json),
+        )
+
+        if role == "user" and conversation["title"] == "New chat":
+            title = " ".join(content.split())[:60] or "New chat"
+            connection.execute(
+                """
+                UPDATE conversations
+                SET title = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (title, conversation_id),
+            )
+        else:
+            connection.execute(
+                """
+                UPDATE conversations
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (conversation_id,),
+            )
+
+        row = connection.execute(
+            """
+            SELECT id, conversation_id, role, content,
+                   details_json, created_at
+            FROM chat_messages
+            WHERE id = ?
+            """,
+            (cursor.lastrowid,),
+        ).fetchone()
+
+        message = dict(row)
+        message.pop("details_json")
+        message["details"] = details
+        return message
+
+
 def claim_assistant_request(
     idempotency_key: str,
     request_hash: str,
 ) -> dict[str, Any]:
-    """Claim a new request, or report its existing state."""
+    """Claim a request or report its existing state."""
+
+    now = time.time()
+    owner_token = secrets.token_urlsafe(32)
+    lease_expires_at = now + ASSISTANT_REQUEST_LEASE_SECONDS
 
     with get_connection() as connection:
-        # Serialize claims so concurrent requests cannot both win.
         connection.execute("BEGIN IMMEDIATE")
 
         row = connection.execute(
             """
-            SELECT request_hash, status, response_json
+            SELECT request_hash, status, response_json,
+                   owner_token, lease_expires_at
             FROM assistant_request_records
             WHERE idempotency_key = ?
             """,
@@ -373,13 +496,22 @@ def claim_assistant_request(
             connection.execute(
                 """
                 INSERT INTO assistant_request_records (
-                    idempotency_key, request_hash, status
+                    idempotency_key, request_hash, status,
+                    owner_token, lease_expires_at
                 )
-                VALUES (?, ?, 'in_progress')
+                VALUES (?, ?, 'in_progress', ?, ?)
                 """,
-                (idempotency_key, request_hash),
+                (
+                    idempotency_key,
+                    request_hash,
+                    owner_token,
+                    lease_expires_at,
+                ),
             )
-            return {"status": "claimed"}
+            return {
+                "status": "claimed",
+                "owner_token": owner_token,
+            }
 
         if row["request_hash"] != request_hash:
             return {"status": "conflict"}
@@ -390,14 +522,86 @@ def claim_assistant_request(
                 "response": json.loads(row["response_json"]),
             }
 
-        return {"status": "in_progress"}
+        # An old record with no lease is not safe to take over
+        # automatically: its original worker might still be running.
+        if row["lease_expires_at"] is None:
+            return {"status": "in_progress"}
+
+        if row["lease_expires_at"] > now:
+            return {"status": "in_progress"}
+
+        # Recover an expired claim atomically. BEGIN IMMEDIATE ensures
+        # only one competing caller can take ownership.
+        connection.execute(
+            """
+            UPDATE assistant_request_records
+            SET owner_token = ?, lease_expires_at = ?
+            WHERE idempotency_key = ?
+              AND status = 'in_progress'
+              AND lease_expires_at <= ?
+            """,
+            (
+                owner_token,
+                lease_expires_at,
+                idempotency_key,
+                now,
+            ),
+        )
+
+        recovered = connection.execute(
+            """
+            SELECT owner_token
+            FROM assistant_request_records
+            WHERE idempotency_key = ?
+            """,
+            (idempotency_key,),
+        ).fetchone()
+
+        if recovered is None or recovered["owner_token"] != owner_token:
+            return {"status": "in_progress"}
+
+        return {
+            "status": "claimed",
+            "owner_token": owner_token,
+            "recovered": True,
+        }
+
+
+def renew_assistant_request(
+    idempotency_key: str,
+    owner_token: str,
+) -> bool:
+    """Extend a claim only while its owner still holds a valid lease."""
+
+    now = time.time()
+    lease_expires_at = now + ASSISTANT_REQUEST_LEASE_SECONDS
+
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE assistant_request_records
+            SET lease_expires_at = ?
+            WHERE idempotency_key = ?
+              AND status = 'in_progress'
+              AND owner_token = ?
+              AND lease_expires_at > ?
+            """,
+            (
+                lease_expires_at,
+                idempotency_key,
+                owner_token,
+                now,
+            ),
+        )
+        return cursor.rowcount == 1
 
 
 def complete_assistant_request(
     idempotency_key: str,
+    owner_token: str,
     response: dict[str, Any],
 ) -> None:
-    """Store the response for future retries."""
+    """Complete a request only if the caller still owns its claim."""
 
     response_json = json.dumps(
         response,
@@ -409,26 +613,43 @@ def complete_assistant_request(
         cursor = connection.execute(
             """
             UPDATE assistant_request_records
-            SET status = 'completed', response_json = ?
-            WHERE idempotency_key = ? AND status = 'in_progress'
+            SET status = 'completed',
+                response_json = ?,
+                owner_token = NULL,
+                lease_expires_at = NULL
+            WHERE idempotency_key = ?
+              AND status = 'in_progress'
+              AND owner_token = ?
+              AND lease_expires_at > ?
             """,
-            (response_json, idempotency_key),
+            (
+                response_json,
+                idempotency_key,
+                owner_token,
+                time.time(),
+            ),
         )
 
         if cursor.rowcount != 1:
             raise RuntimeError(
-                "Could not complete the assistant request record."
+                "Request claim expired or is no longer owned by this worker."
             )
 
 
-def release_assistant_request(idempotency_key: str) -> None:
-    """Remove an unfinished claim after a failed request."""
+def release_assistant_request(
+    idempotency_key: str,
+    owner_token: str,
+) -> bool:
+    """Release only the unfinished claim still owned by this caller."""
 
     with get_connection() as connection:
-        connection.execute(
+        cursor = connection.execute(
             """
             DELETE FROM assistant_request_records
-            WHERE idempotency_key = ? AND status = 'in_progress'
+            WHERE idempotency_key = ?
+              AND status = 'in_progress'
+              AND owner_token = ?
             """,
-            (idempotency_key,),
+            (idempotency_key, owner_token),
         )
+        return cursor.rowcount == 1

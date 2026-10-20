@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 import hashlib
 import json
+import threading
 
 from app.database import (
     initialize_database,
@@ -18,6 +19,8 @@ from app.database import (
     claim_assistant_request,
     complete_assistant_request,
     release_assistant_request,
+    add_chat_message_for_assistant_request,
+    renew_assistant_request,
 )
 from app.registry import TOOL_DEFINITIONS, execute_tool
 
@@ -154,9 +157,59 @@ def run_tool(request: ToolExecutionRequest) -> dict[str, Any]:
 def assistant(request: AssistantRequest) -> dict[str, Any]:
     conversation_id = request.conversation_id
     idempotency_key = request.idempotency_key
+    owner_token: str | None = None
     request_claimed = False
 
-    # Claim the request before creating conversations or saving messages.
+    heartbeat_stop = threading.Event()
+    heartbeat_lost = threading.Event()
+    heartbeat_thread: threading.Thread | None = None
+
+    def stop_heartbeat() -> None:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join()
+
+    def renew_lease() -> None:
+        while not heartbeat_stop.wait(30):
+            try:
+                renewed = renew_assistant_request(
+                    idempotency_key, owner_token
+                )
+            except Exception:
+                logger.exception("Could not renew assistant request lease")
+                heartbeat_lost.set()
+                return
+
+            if not renewed:
+                heartbeat_lost.set()
+                return
+
+    def save_message(
+        role: str,
+        content: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if heartbeat_lost.is_set():
+            raise RuntimeError("Assistant request ownership was lost.")
+
+        if request_claimed and idempotency_key and owner_token:
+            add_chat_message_for_assistant_request(
+                idempotency_key=idempotency_key,
+                owner_token=owner_token,
+                conversation_id=conversation_id,
+                role=role,
+                content=content,
+                details=details,
+            )
+        else:
+            add_chat_message(
+                conversation_id=conversation_id,
+                role=role,
+                content=content,
+                details=details,
+            )
+
+    # Claim before creating conversations or saving messages.
     if idempotency_key:
         request_data = {
             "prompt": request.prompt,
@@ -193,9 +246,22 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
             )
 
         request_claimed = claim["status"] == "claimed"
+        owner_token = claim.get("owner_token")
+
+        if request_claimed and not owner_token:
+            raise RuntimeError(
+                "Request was claimed without an ownership token."
+            )
+
+        if request_claimed:
+            heartbeat_thread = threading.Thread(
+                target=renew_lease,
+                name="assistant-request-lease",
+                daemon=True,
+            )
+            heartbeat_thread.start()
 
     try:
-        # Create a conversation only after the replay check.
         if conversation_id is None:
             conversation = create_conversation()
             conversation_id = conversation["id"]
@@ -205,9 +271,7 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
                 detail="Conversation not found.",
             )
 
-        # Save the prompt before calling Gemini.
-        add_chat_message(
-            conversation_id=conversation_id,
+        save_message(
             role="user",
             content=request.prompt,
         )
@@ -217,9 +281,7 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
             idempotency_key=idempotency_key,
         )
 
-        # Save the answer and tool details for conversation history.
-        add_chat_message(
-            conversation_id=conversation_id,
+        save_message(
             role="assistant",
             content=result["answer"],
             details={
@@ -234,23 +296,32 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
             "conversation_id": conversation_id,
         }
 
-        # Cache the complete successful response for future retries.
-        if request_claimed and idempotency_key:
+        if request_claimed and idempotency_key and owner_token:
+            stop_heartbeat()
+
+            if heartbeat_lost.is_set():
+                raise RuntimeError(
+                    "Assistant request ownership was lost before completion."
+                )
+
             complete_assistant_request(
                 idempotency_key,
+                owner_token,
                 response,
             )
 
         return response
 
     except HTTPException:
-        if request_claimed and idempotency_key:
-            release_assistant_request(idempotency_key)
+        if request_claimed and idempotency_key and owner_token:
+            stop_heartbeat()
+            release_assistant_request(idempotency_key, owner_token)
         raise
 
     except ValueError as exc:
-        if request_claimed and idempotency_key:
-            release_assistant_request(idempotency_key)
+        if request_claimed and idempotency_key and owner_token:
+            stop_heartbeat()
+            release_assistant_request(idempotency_key, owner_token)
 
         logger.warning(
             "Assistant request rejected: %s",
@@ -262,8 +333,9 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
         ) from exc
 
     except RuntimeError as exc:
-        if request_claimed and idempotency_key:
-            release_assistant_request(idempotency_key)
+        if request_claimed and idempotency_key and owner_token:
+            stop_heartbeat()
+            release_assistant_request(idempotency_key, owner_token)
 
         logger.exception("Assistant agent failed")
         raise HTTPException(
@@ -272,8 +344,9 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
         ) from exc
 
     except Exception as exc:
-        if request_claimed and idempotency_key:
-            release_assistant_request(idempotency_key)
+        if request_claimed and idempotency_key and owner_token:
+            stop_heartbeat()
+            release_assistant_request(idempotency_key, owner_token)
 
         logger.exception(
             "Unexpected assistant endpoint failure (%s)",
@@ -283,3 +356,6 @@ def assistant(request: AssistantRequest) -> dict[str, Any]:
             status_code=502,
             detail="The AI service or tool execution failed.",
         ) from exc
+
+    finally:
+        stop_heartbeat()
