@@ -1,89 +1,105 @@
-# AI Tool Execution Engine
+# ToolPilot — AI Tool Execution Engine
 
-A Python-based tool execution gateway for AI agents, built with FastAPI, Pydantic, SQLite, and Google's Gemini API.
+ToolPilot is a full-stack AI tool execution engine that converts natural-language requests into validated application actions. It combines Google's Gemini function calling with a controlled Python backend, persistent SQLite storage, and a React + TypeScript chat interface.
 
-The project connects natural-language requests to a controlled set of application tools. Gemini can select a tool and propose its arguments, while the application validates those arguments, dispatches the request to an allowlisted handler, and records execution details.
+Rather than allowing an AI model to execute arbitrary operations, ToolPilot exposes an allowlisted set of tools. The application validates proposed arguments, dispatches registered handlers, persists relevant results, and records execution history.
 
 ## Features
 
-- **Gemini function calling:** Translate natural-language requests into structured tool calls.
-- **Validated arguments:** Use Pydantic schemas to validate tool inputs before execution.
-- **Allowlisted tool registry:** Only registered application tools can be executed.
-- **REST API:** Expose the engine through FastAPI endpoints.
-- **SQLite persistence:** Store support tickets, demo bookings, execution records, and idempotency records.
-- **Execution auditing:** Record successful and failed tool executions.
-- **Idempotency support:** Recognize repeated write requests using a supplied idempotency key.
-- **Automated tests:** Test validation, execution, API behavior, auditing, idempotency, and mocked AI interactions without requiring live Gemini calls.
+- **AI-powered tool selection:** Use Gemini function calling to map natural-language requests to registered application tools.
+- **Validated inputs:** Validate tool arguments with Pydantic schemas before execution.
+- **Controlled execution:** Dispatch only registered tools through an allowlisted tool registry.
+- **REST API:** Expose health, tool discovery, execution, assistant, and conversation endpoints through FastAPI.
+- **Persistent conversations:** Save chat messages and reopen previous conversations after refreshing the frontend.
+- **Execution history:** Persist tool execution records and display relevant tool details alongside assistant responses.
+- **Idempotency:** Use request keys to prevent duplicate processing of repeated assistant requests and supported write operations.
+- **SQLite persistence:** Store support tickets, demo bookings, conversations, execution records, and idempotency records.
+- **Automated testing:** Test API behavior, validation, persistence, retries, and failure scenarios without requiring live Gemini calls for the mocked tests.
+- **Full-stack interface:** Interact with the backend through a React + TypeScript frontend with Markdown-formatted assistant responses.
 
 ## Architecture
 
 ```text
-Client
-  |
-  v
-FastAPI
-  |
-  +---- /health
-  +---- /tools
-  +---- /tools/execute
-  +---- /assistant
-                |
-                v
-          Gemini API
-                |
-          Proposed tool call
-                |
-                v
-         Tool Registry
-                |
-         Pydantic Validation
-                |
-                v
-         Tool Handlers
-                |
-                v
-             SQLite
-                |
-                v
-       Tool result returned
-       to Gemini for a reply
+React + TypeScript Frontend
+          |
+          v
+      FastAPI API
+          |
+          +---- Health / Tool Discovery
+          +---- Direct Tool Execution
+          +---- Conversation Management
+          +---- Assistant Requests
+                     |
+                     v
+                  Gemini
+              Function Calling
+                     |
+                     v
+              Tool Registry
+                     |
+                     v
+             Pydantic Validation
+                     |
+                     v
+               Tool Handlers
+                     |
+                     v
+                  SQLite
+          /          |           \
+   Business Data  Conversations  Execution &
+                                 Idempotency
+                     |
+                     v
+             Tool Result / Reply
 ```
 
-The application—not the language model—controls the available tools and executes their handlers.
+**Design principle:** The model proposes an action; the application validates and executes it. The model is not given unrestricted access to application operations.
 
 ## Available tools
 
 | Tool | Purpose |
 |---|---|
-| `check_order_status` | Look up an order in sample order data |
+| `check_order_status` | Look up an order in sample data |
 | `get_business_hours` | Retrieve business hours for a weekday |
 | `create_support_ticket` | Create a support ticket in SQLite |
 | `book_demo` | Record a demo booking request in SQLite |
 
-The order-status and business-hours tools currently use sample data. Ticket creation and demo booking persist records in the local database.
+Order-status and business-hours lookups currently use sample data. Support tickets and demo bookings are persisted in the local database.
 
 ## Technology stack
 
+**Backend**
 - Python
 - FastAPI
 - Pydantic
 - Google GenAI SDK (`google-genai`)
 - SQLite
 - pytest
-- HTTPX / FastAPI TestClient
+
+**Frontend**
+- React
+- TypeScript
+- Vite
+- React Markdown
 
 ## Getting started
 
+### Prerequisites
+
+- Python installed and available through the Windows Python launcher (`py`)
+- Node.js and npm
+- A Google AI Studio API key for live Gemini-powered requests
+
 ### 1. Clone the repository
 
-```bash
-git clone <your-repository-url>
+```powershell
+git clone https://github.com/Sarb008/ai-tool-execution-engine.git
 cd ai-tool-execution-engine
 ```
 
-### 2. Create a virtual environment
+### 2. Set up the backend
 
-Windows PowerShell:
+Create a virtual environment:
 
 ```powershell
 py -m venv .venv
@@ -95,34 +111,51 @@ Install the dependencies:
 .\.venv\Scripts\python.exe -m pip install fastapi "uvicorn[standard]" "pydantic>=2,<3" google-genai python-dotenv pytest httpx
 ```
 
-### 3. Configure environment variables
+### 3. Configure Gemini
 
-Create a local `.env` file from the template:
+Create a local environment file:
 
 ```powershell
 Copy-Item .env.example .env
 ```
 
-Edit `.env` and provide your Google AI Studio API key:
+Edit `.env` and configure your own API key and model:
 
 ```dotenv
 GEMINI_API_KEY=your_actual_api_key
 GEMINI_MODEL=gemini-3.8-flash
 ```
 
-Keep `.env` private. Never commit API keys or other credentials to Git.
+Use a model available to your account. Never commit `.env` or expose API keys in source code, screenshots, logs, or public repositories.
 
-### 4. Start the API
+### 4. Start the backend
+
+From the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The service runs at `http://127.0.0.1:8000`.
+Backend URLs:
 
-Interactive API documentation is available at `http://127.0.0.1:8000/docs`.
+- API: `http://127.0.0.1:8000`
+- Interactive API documentation: `http://127.0.0.1:8000/docs`
 
-## API endpoints
+### 5. Set up and start the frontend
+
+Open a second terminal:
+
+```powershell
+cd frontend
+npm.cmd install
+npm.cmd run dev
+```
+
+Open the local URL printed by Vite, usually `http://localhost:5173`.
+
+Keep the backend and frontend terminals running while using the application.
+
+## API overview
 
 ### Health check
 
@@ -130,15 +163,15 @@ Interactive API documentation is available at `http://127.0.0.1:8000/docs`.
 GET /health
 ```
 
-Checks that the application is responding.
+Check whether the API is responding.
 
-### List available tools
+### Discover available tools
 
 ```http
 GET /tools
 ```
 
-Returns the registered tool names and descriptions.
+Retrieve registered tool names and descriptions.
 
 ### Execute a tool directly
 
@@ -158,7 +191,7 @@ Example:
 }
 ```
 
-### Send a natural-language request
+### Submit an assistant request
 
 ```http
 POST /assistant
@@ -169,45 +202,82 @@ Example:
 
 ```json
 {
-  "prompt": "Check the status of order ORD-1002"
+  "prompt": "What are the business hours on Monday?"
 }
 ```
 
-Gemini can select the appropriate registered tool, after which the application validates and executes the request. The tool result is sent back to Gemini to produce a natural-language response.
+The backend sends the request to Gemini, processes a proposed registered tool call when appropriate, and returns the result and a natural-language response.
 
-A write request may also supply an idempotency key:
+Assistant requests can include an idempotency key and a conversation ID:
 
 ```json
 {
   "prompt": "Create a support ticket for customer CUST-100",
-  "idempotency_key": "support-request-001"
+  "idempotency_key": "support-request-001",
+  "conversation_id": 1
 }
 ```
 
-Use a unique key for each logical write operation. The engine uses SQLite transactions to atomically execute supported write operations, store idempotency records, and record successful executions. Repeated requests with the same key and input replay the original result; reusing a key with different inputs is rejected. Concurrent retries are covered by automated tests.
+The conversation ID is optional. The idempotency key is also optional, but should be supplied when safe retries are required.
 
-## Running tests
+### Conversation management
 
-Run the test suite from the project root:
+| Endpoint | Purpose |
+|---|---|
+| `POST /conversations` | Create a conversation |
+| `GET /conversations` | List saved conversations |
+| `GET /conversations/{conversation_id}` | Retrieve a conversation and its messages |
+
+The frontend uses these endpoints to restore saved chats and start new conversations.
+
+## Idempotency and reliability
+
+ToolPilot implements database-backed idempotency at both the tool-execution layer and the assistant-request layer.
+
+- Repeating a completed assistant request with the same key and request payload returns the stored response rather than executing the request again.
+- Reusing a key with a different request payload is rejected.
+- A request already marked `in_progress` is rejected rather than immediately executed a second time.
+- Supported write operations use SQLite transactions to coordinate data changes, idempotency records, and execution records.
+- Automated tests cover repeated requests, conflicting keys, concurrent retries, and in-progress requests.
+
+**Current limitation:** Crash recovery for abandoned `in_progress` assistant requests has not yet been implemented. A process crash at the wrong point can leave a request blocked until recovery is added. The project should not be considered production-ready.
+
+## Running the tests
+
+From the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest .\tests -q
 ```
 
-The current test suite contains 26 passing tests. Gemini interactions in the automated agent tests are mocked, so the tests do not require live model calls.
+The latest verified result is **41 passing tests**.
+
+The mocked agent and API tests avoid unnecessary live Gemini requests. A successful test run does not require consuming Gemini API quota for every test.
+
+## Building the frontend
+
+From the frontend directory:
+
+```powershell
+npm.cmd run build
+```
+
+This runs TypeScript compilation and creates a production build using Vite.
+
+The latest verified production build completed successfully.
 
 ## Project structure
 
 ```text
 ai-tool-execution-engine/
 ├── app/
-│   ├── main.py           # FastAPI application and routes
-│   ├── schemas.py        # Strict argument validation schemas
-│   ├── registry.py       # Tool registry, validation and dispatch
-│   ├── database.py       # SQLite connections and audit persistence
-│   ├── gemini_agent.py   # Gemini function-calling integration
+│   ├── main.py
+│   ├── schemas.py
+│   ├── registry.py
+│   ├── database.py
+│   ├── gemini_agent.py
 │   └── tools/
-│       └── handlers.py   # Registered tool implementations
+│       └── handlers.py
 ├── tests/
 │   ├── test_health.py
 │   ├── test_registry.py
@@ -215,21 +285,34 @@ ai-tool-execution-engine/
 │   ├── test_audit.py
 │   ├── test_idempotency.py
 │   ├── test_api.py
-│   └── test_gemini_agent.py
+│   ├── test_gemini_agent.py
+│   ├── test_conversations.py
+│   ├── test_assistant_conversations.py
+│   └── test_assistant_idempotency.py
+├── frontend/
+│   ├── public/
+│   ├── src/
+│   │   ├── App.tsx
+│   │   ├── App.css
+│   │   ├── index.css
+│   │   └── main.tsx
+│   ├── package.json
+│   └── vite.config.ts
 ├── .env.example
 ├── .gitignore
 └── README.md
 ```
 
-## Current limitations and future improvements
+## Limitations and future improvements
 
-- Order and business-hour data are examples rather than integrations with a real business system.
-- The application uses a local SQLite database.
-- Authentication, authorization, rate limiting, and production deployment configuration have not yet been implemented.
-- Tool execution is currently a single-tool interaction per assistant request.
+- Business hours and order status use sample data rather than live external integrations.
+- The backend currently uses local SQLite storage.
+- Authentication, authorization, rate limiting, and production deployment configuration are not implemented.
+- Assistant requests currently support a single tool interaction rather than multi-step workflows.
+- Safe recovery of abandoned in-progress requests remains future work.
 
-Potential next steps include authentication and authorization, rate limiting, structured logging, configurable tool permissions, production deployment, and integration tests.
+Potential improvements include authenticated access, configurable tool permissions, observability, crash recovery, external business-system integrations, and deployment.
 
 ## License
 
-Choose and add an appropriate open-source license before publishing the repository publicly.
+No open-source license has been added yet. Add an appropriate license before distributing the project under an open-source license.
