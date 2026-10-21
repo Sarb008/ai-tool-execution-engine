@@ -5,6 +5,9 @@ import ReactMarkdown from 'react-markdown'
 
 type Page = 'Overview' | 'Assistant' | 'Tool Catalog' | 'Execution History'
 
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || 'http://127.0.0.1:8000'
+
 const navigation: { label: Page; icon: string }[] = [
   { label: 'Overview', icon: '◫' },
   { label: 'Assistant', icon: '✳' },
@@ -95,7 +98,7 @@ function AssistantChat() {
 
     try {
       const response = await fetch(
-        `http://127.0.0.1:8000/conversations/${id}`,
+        `${API_BASE_URL}/conversations/${id}`,
       )
 
       const data = await response.json()
@@ -130,7 +133,7 @@ function AssistantChat() {
   }
 
   async function refreshConversationList() {
-    const response = await fetch('http://127.0.0.1:8000/conversations')
+    const response = await fetch(`${API_BASE_URL}/conversations`)
 
     if (!response.ok) {
       throw new Error('Could not load saved conversations.')
@@ -149,7 +152,7 @@ function AssistantChat() {
     async function loadSavedChats() {
       try {
         const response = await fetch(
-          'http://127.0.0.1:8000/conversations',
+          `${API_BASE_URL}/conversations`,
         )
 
         if (!response.ok) {
@@ -197,7 +200,7 @@ function AssistantChat() {
 
     try {
       const response = await fetch(
-        'http://127.0.0.1:8000/conversations',
+        `${API_BASE_URL}/conversations`,
         { method: 'POST' },
       )
 
@@ -241,7 +244,7 @@ function AssistantChat() {
       // The first message can create a conversation automatically.
       if (conversationId === null) {
         const createResponse = await fetch(
-          'http://127.0.0.1:8000/conversations',
+          `${API_BASE_URL}/conversations`,
           { method: 'POST' },
         )
 
@@ -256,7 +259,7 @@ function AssistantChat() {
         setConversations((previous) => [created, ...previous])
       }
 
-      const response = await fetch('http://127.0.0.1:8000/assistant', {
+      const response = await fetch(`${API_BASE_URL}/assistant`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -291,7 +294,7 @@ function AssistantChat() {
     } catch (err) {
       if (err instanceof TypeError) {
         setError(
-          'Could not reach the ToolPilot backend. Check that it is running at http://127.0.0.1:8000.',
+          'Could not reach the ToolPilot backend. Check the API URL and try again.',
         )
       } else {
         setError(
@@ -519,7 +522,7 @@ function App() {
         setToolsLoading(true)
         setToolsError('')
 
-        const response = await fetch('http://127.0.0.1:8000/tools', {
+        const response = await fetch(`${API_BASE_URL}/tools`, {
           signal: controller.signal,
         })
 
@@ -564,7 +567,7 @@ function App() {
       setExecutionsError('')
 
       const response = await fetch(
-        'http://127.0.0.1:8000/executions?limit=100',
+        `${API_BASE_URL}/executions?limit=100`,
         { signal: controller.signal },
       )
 
